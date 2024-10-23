@@ -12,7 +12,7 @@ def main():
     parser.add_argument('-f', '--input_fg', required=True, help='Path to foreground image')
     parser.add_argument('-b', '--input_bg', help='Path to background image')
     parser.add_argument('-o', '--output', help='Path to output image (default: timestamp_mode.png)')
-    parser.add_argument('-p', '--prompt', default='beautiful woman', help='Text prompt')
+    parser.add_argument('-p', '--prompt', help='Text prompt', required=True)
     parser.add_argument('-x', '--width', type=int, default=512, help='Output image width')
     parser.add_argument('-y', '--height', type=int, default=512, help='Output image height')
     parser.add_argument('-k', '--samples', type=int, default=1, help='Number of samples')
