@@ -1,5 +1,7 @@
 import os
 import math
+from PIL import Image
+import numpy as np
 import torch
 import safetensors.torch as sf
 
@@ -167,8 +169,167 @@ class IcLightFC:
 
         return c, uc
 
-    # Add remaining methods (pytorch2numpy, numpy2pytorch, resize methods, process, process_relight)
-    # [Previous implementation methods continue...]
+    @torch.inference_mode()
+    def pytorch2numpy(imgs, quant=True):
+        results = []
+        for x in imgs:
+            y = x.movedim(0, -1)
+
+            if quant:
+                y = y * 127.5 + 127.5
+                y = y.detach().float().cpu().numpy().clip(0, 255).astype(np.uint8)
+            else:
+                y = y * 0.5 + 0.5
+                y = y.detach().float().cpu().numpy().clip(0, 1).astype(np.float32)
+
+            results.append(y)
+        return results
+
+    @staticmethod
+    def numpy2pytorch(imgs):
+        h = torch.from_numpy(np.stack(imgs, axis=0)).float() / 127.0 - 1.0  # so that 127 must be strictly 0.0
+        h = h.movedim(-1, 1)
+        return h
+
+    @staticmethod
+    def resize_and_center_crop(image, target_width, target_height):
+        pil_image = Image.fromarray(image)
+        original_width, original_height = pil_image.size
+        scale_factor = max(target_width / original_width, target_height / original_height)
+        resized_width = int(round(original_width * scale_factor))
+        resized_height = int(round(original_height * scale_factor))
+        resized_image = pil_image.resize((resized_width, resized_height), Image.LANCZOS)
+        left = (resized_width - target_width) / 2
+        top = (resized_height - target_height) / 2
+        right = (resized_width + target_width) / 2
+        bottom = (resized_height + target_height) / 2
+        cropped_image = resized_image.crop((left, top, right, bottom))
+        return np.array(cropped_image)
+
+    @staticmethod
+    def resize_without_crop(image, target_width, target_height):
+        pil_image = Image.fromarray(image)
+        resized_image = pil_image.resize((target_width, target_height), Image.LANCZOS)
+        return np.array(resized_image)
+
+
+    @torch.inference_mode()
+    def run_rmbg(self, img, sigma=0.0):
+        H, W, C = img.shape
+        assert C == 3
+        k = (256.0 / float(H * W)) ** 0.5
+        feed = self.resize_without_crop(img, int(64 * round(W * k)), int(64 * round(H * k)))
+        feed = self.numpy2pytorch([feed]).to(device=self.device, dtype=torch.float32)
+        alpha = self.rmbg(feed)[0][0]
+        alpha = torch.nn.functional.interpolate(alpha, size=(H, W), mode="bilinear")
+        alpha = alpha.movedim(1, -1)[0]
+        alpha = alpha.detach().float().cpu().numpy().clip(0, 1)
+        result = 127 + (img.astype(np.float32) - 127 + sigma) * alpha
+        return result.clip(0, 255).astype(np.uint8), alpha
+    
+    @torch.inference_mode()
+    def process(self, input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
+        bg_source = BGSource(bg_source)
+        input_bg = None
+
+        if bg_source == BGSource.NONE:
+            pass
+        elif bg_source == BGSource.LEFT:
+            gradient = np.linspace(255, 0, image_width)
+            image = np.tile(gradient, (image_height, 1))
+            input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
+        elif bg_source == BGSource.RIGHT:
+            gradient = np.linspace(0, 255, image_width)
+            image = np.tile(gradient, (image_height, 1))
+            input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
+        elif bg_source == BGSource.TOP:
+            gradient = np.linspace(255, 0, image_height)[:, None]
+            image = np.tile(gradient, (1, image_width))
+            input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
+        elif bg_source == BGSource.BOTTOM:
+            gradient = np.linspace(0, 255, image_height)[:, None]
+            image = np.tile(gradient, (1, image_width))
+            input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
+        else:
+            raise 'Wrong initial latent!'
+
+        rng = torch.Generator(device=self.device).manual_seed(int(seed))
+
+        fg = self.resize_and_center_crop(input_fg, image_width, image_height)
+
+        concat_conds = self.numpy2pytorch([fg]).to(device=self.vae.device, dtype=self.vae.dtype)
+        concat_conds = self.vae.encode(concat_conds).latent_dist.mode() * self.vae.config.scaling_factor
+
+        conds, unconds = self.encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
+
+        if input_bg is None:
+            latents = self.t2i_pipe(
+                prompt_embeds=conds,
+                negative_prompt_embeds=unconds,
+                width=image_width,
+                height=image_height,
+                num_inference_steps=steps,
+                num_images_per_prompt=num_samples,
+                generator=rng,
+                output_type='latent',
+                guidance_scale=cfg,
+                cross_attention_kwargs={'concat_conds': concat_conds},
+            ).images.to(self.vae.dtype) / self.vae.config.scaling_factor
+        else:
+            bg = self.resize_and_center_crop(input_bg, image_width, image_height)
+            bg_latent = self.numpy2pytorch([bg]).to(device=self.vae.device, dtype=self.vae.dtype)
+            bg_latent = self.vae.encode(bg_latent).latent_dist.mode() * self.vae.config.scaling_factor
+            latents = self.i2i_pipe(
+                image=bg_latent,
+                strength=lowres_denoise,
+                prompt_embeds=conds,
+                negative_prompt_embeds=unconds,
+                width=image_width,
+                height=image_height,
+                num_inference_steps=int(round(steps / lowres_denoise)),
+                num_images_per_prompt=num_samples,
+                generator=rng,
+                output_type='latent',
+                guidance_scale=cfg,
+                cross_attention_kwargs={'concat_conds': concat_conds},
+            ).images.to(self.vae.dtype) / self.vae.config.scaling_factor
+
+        pixels = self.vae.decode(latents).sample
+        pixels = self.pytorch2numpy(pixels)
+        pixels = [self.resize_without_crop(
+            image=p,
+            target_width=int(round(image_width * highres_scale / 64.0) * 64),
+            target_height=int(round(image_height * highres_scale / 64.0) * 64))
+        for p in pixels]
+
+        pixels = self.numpy2pytorch(pixels).to(device=self.vae.device, dtype=self.vae.dtype)
+        latents = self.vae.encode(pixels).latent_dist.mode() * self.vae.config.scaling_factor
+        latents = latents.to(device=self.unet.device, dtype=self.unet.dtype)
+
+        image_height, image_width = latents.shape[2] * 8, latents.shape[3] * 8
+
+        fg = self.resize_and_center_crop(input_fg, image_width, image_height)
+        concat_conds = self.numpy2pytorch([fg]).to(device=self.vae.device, dtype=self.vae.dtype)
+        concat_conds = self.vae.encode(concat_conds).latent_dist.mode() * self.vae.config.scaling_factor
+
+        latents = self.i2i_pipe(
+            image=latents,
+            strength=highres_denoise,
+            prompt_embeds=conds,
+            negative_prompt_embeds=unconds,
+            width=image_width,
+            height=image_height,
+            num_inference_steps=int(round(steps / highres_denoise)),
+            num_images_per_prompt=num_samples,
+            generator=rng,
+            output_type='latent',
+            guidance_scale=cfg,
+            cross_attention_kwargs={'concat_conds': concat_conds},
+        ).images.to(self.vae.dtype) / self.vae.config.scaling_factor
+
+        pixels = self.vae.decode(latents).sample
+
+        return self.pytorch2numpy(pixels)
 
     @torch.inference_mode()
     def process_relight(self, input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):

@@ -59,7 +59,7 @@ def main():
     )
 
     # Save the first result
-    output = cv2.cvtColor(results[0], cv2.COLOR_RGB2BGR)
+    output = cv2.cvtColor(results, cv2.COLOR_RGB2BGR)
     cv2.imwrite(args.output, output)
     print(f"Output saved to: {args.output}")
 
