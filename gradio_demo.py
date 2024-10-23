@@ -62,8 +62,14 @@ unet.load_state_dict(sd_merged, strict=True)
 del sd_offset, sd_origin, sd_merged, keys
 
 # Device
+def get_device():
+    return (
+        "cuda"
+        if torch.cuda.is_available()
+        else "mps" if torch.backends.mps.is_available() else "cpu"
+    )
 
-device = torch.device('cuda')
+device = torch.device(get_device())
 text_encoder = text_encoder.to(device=device, dtype=torch.float16)
 vae = vae.to(device=device, dtype=torch.bfloat16)
 unet = unet.to(device=device, dtype=torch.float16)
