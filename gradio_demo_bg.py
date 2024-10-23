@@ -1,6 +1,6 @@
 import gradio as gr
 import db_examples
-from iclight import IcLightFBC, BGSource
+from iclight_fbc import IcLightFBC, BGSource
 
 # Initialize IC-Light
 ic_light = IcLightFBC()
