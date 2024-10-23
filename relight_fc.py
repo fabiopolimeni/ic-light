@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-from iclight_core import IcLight, BGSource
+from iclight_fc import IcLightFC, BGSource
 import cv2
 from datetime import datetime
 
@@ -10,59 +10,39 @@ def bg_source_type(value):
 def main():
     parser = argparse.ArgumentParser(description='IC-Light Image Relighting Tool')
     parser.add_argument('-f', '--input_fg', required=True, help='Path to foreground image')
-    parser.add_argument('-b', '--input_bg', default=None, help='Path to background image')
     parser.add_argument('-o', '--output', help='Path to output image (default: timestamp_mode.png)')
     parser.add_argument('-p', '--prompt', default='beautiful woman', help='Text prompt')
     parser.add_argument('-x', '--width', type=int, default=512, help='Output image width')
     parser.add_argument('-y', '--height', type=int, default=512, help='Output image height')
     parser.add_argument('-k', '--samples', type=int, default=1, help='Number of samples')
     parser.add_argument('-s', '--seed', type=int, default=12345, help='Random seed')
-    parser.add_argument('-t', '--steps', type=int, default=10, help='Number of inference steps')
-    parser.add_argument('-c', '--cfg', type=float, default=4.0, help='CFG scale')
-    parser.add_argument('-r', '--highres_scale', type=float, default=1, help='Highres scale')
-    parser.add_argument('-d', '--highres_denoise', type=float, default=0.5, help='Highres denoise strength')
+    parser.add_argument('-t', '--steps', type=int, default=25, help='Number of inference steps')
+    parser.add_argument('-c', '--cfg', type=float, default=2.0, help='CFG scale')
     parser.add_argument('-l', '--lowres_denoise', type=float, default=0.9, help='Lowres denoise strength')
+    parser.add_argument('-r', '--highres_scale', type=float, default=1.5, help='Highres scale')
+    parser.add_argument('-d', '--highres_denoise', type=float, default=0.5, help='Highres denoise strength')
     parser.add_argument('-a', '--added_prompt', default='best quality', help='Additional positive prompt')
     parser.add_argument('-n', '--negative_prompt', default='lowres, bad anatomy, bad hands, cropped, worst quality', help='Negative prompt')
-    parser.add_argument('-m', '--mode', choices=['relight', 'normal'], default='relight', help='Processing mode')
-    parser.add_argument('-g', '--bg_source', type=bg_source_type, choices=list(BGSource), default=BGSource.BACKGROUND,
-                help='Background source: ' + ', '.join([e.name for e in BGSource]))
+    parser.add_argument('-g', '--bg_source', type=bg_source_type, choices=list(BGSource), default=BGSource.NONE,
+                help='Lighting preference: ' + ', '.join([e.name for e in BGSource]))
 
     args = parser.parse_args()
-
-    # Validate background requirements
-    if args.bg_source in [BGSource.BACKGROUND.value, BGSource.BACKGROUND_FLIP.value]:
-        if not args.input_bg:
-            print(f"Error: --input_bg is required when bg_source is {args.bg_source}")
-            return
 
     # Generate output filename if not provided
     if not args.output:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        args.output = f"{timestamp}_{args.mode}.png"
+        args.output = f"{timestamp}_relight.png"
 
-    with_bg = True if args.input_bg and args.bg_source in [BGSource.BACKGROUND.value, BGSource.BACKGROUND_FLIP.value] else False
-
-    # If no bg is provided, then the bg lighting 
-    
     # Initialize IC-Light
-    ic_light = IcLight(with_bg)
+    ic_light = IcLightFC()
 
     # Load foreground image
     input_fg = cv2.imread(args.input_fg)
     input_fg = cv2.cvtColor(input_fg, cv2.COLOR_BGR2RGB)
 
-    # Load background image if provided
-    input_bg = None
-    if args.input_bg:
-        input_bg = cv2.imread(args.input_bg)
-        input_bg = cv2.cvtColor(input_bg, cv2.COLOR_BGR2RGB)
-
     # Process the image
-    processor = ic_light.process_relight if args.mode == 'relight' else ic_light.process_normal
-    results = processor(
+    _, results = ic_light.process_relight(
         input_fg=input_fg,
-        input_bg=input_bg,
         prompt=args.prompt,
         image_width=args.width,
         image_height=args.height,
@@ -75,7 +55,7 @@ def main():
         highres_scale=args.highres_scale,
         highres_denoise=args.highres_denoise,
         lowres_denoise=args.lowres_denoise,
-        bg_source=args.bg_source
+        bg_source=args.bg_source.value
     )
 
     # Save the first result
