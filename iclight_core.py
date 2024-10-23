@@ -1,5 +1,6 @@
 import os
 import math
+from pickle import NONE
 import numpy as np
 import torch
 import safetensors.torch as sf
@@ -13,8 +14,9 @@ from transformers import CLIPTextModel, CLIPTokenizer
 from briarmbg import BriaRMBG
 
 class BGSource(Enum):
-    UPLOAD = "Use Background Image"
-    UPLOAD_FLIP = "Use Flipped Background Image"
+    NONE = "None"
+    BACKGROUND = "Use Background Image"
+    BACKGROUND_FLIP = "Use Flipped Background Image"
     LEFT = "Left Light"
     RIGHT = "Right Light"
     TOP = "Top Light"
@@ -22,13 +24,47 @@ class BGSource(Enum):
     GREY = "Ambient"
 
 class IcLight:
-    def __init__(self):
+    def __init__(self, with_background):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-        self.setup_models()
+        self.setup_models(with_background)
         self.setup_schedulers()
         self.setup_pipelines()
+
+    # Dynamically adjust UNet input channels
+    def adjust_unet_input_channels(self, channels):
+        with torch.no_grad():
+            new_conv_in = torch.nn.Conv2d(channels, self.unet.conv_in.out_channels, self.unet.conv_in.kernel_size, self.unet.conv_in.stride, self.unet.conv_in.padding)
+            new_conv_in.weight.zero_()
+            new_conv_in.weight[:, :4, :, :].copy_(self.unet.conv_in.weight)
+            new_conv_in.bias = self.unet.conv_in.bias
+            self.unet.conv_in = new_conv_in
+    
+    def hooked_unet_forward(self, sample, timestep, encoder_hidden_states, **kwargs):
+        c_concat = kwargs['cross_attention_kwargs']['concat_conds'].to(sample)
+        c_concat = torch.cat([c_concat] * (sample.shape[0] // c_concat.shape[0]), dim=0)
+        new_sample = torch.cat([sample, c_concat], dim=1)
+        kwargs['cross_attention_kwargs'] = {}
+        return self.unet_original_forward(new_sample, timestep, encoder_hidden_states, **kwargs)
+
+    def load_model_weights(self, background_present):
+        if background_present:
+            model_path = './models/iclight_sd15_fbc.safetensors'
+            self.adjust_unet_input_channels(12)
+        else:
+            model_path = './models/iclight_sd15_fc.safetensors'
+            self.adjust_unet_input_channels(8)
+
+        if not os.path.exists(model_path):
+            download_url_to_file(url=f'https://huggingface.co/lllyasviel/ic-light/resolve/main/{os.path.basename(model_path)}', dst=model_path)
+
+        sd_offset = sf.load_file(model_path)
+        sd_origin = self.unet.state_dict()
+        keys = sd_origin.keys()
+        sd_merged = {k: sd_origin[k] + sd_offset[k] for k in sd_origin.keys()}
+        self.unet.load_state_dict(sd_merged, strict=True)
+        del sd_offset, sd_origin, sd_merged, keys
         
-    def setup_models(self):
+    def setup_models(self, with_background):
         self.sd15_name = 'stablediffusionapi/realistic-vision-v51'
         self.tokenizer = CLIPTokenizer.from_pretrained(self.sd15_name, subfolder="tokenizer")
         self.text_encoder = CLIPTextModel.from_pretrained(self.sd15_name, subfolder="text_encoder")
@@ -36,29 +72,11 @@ class IcLight:
         self.unet = UNet2DConditionModel.from_pretrained(self.sd15_name, subfolder="unet")
         self.rmbg = BriaRMBG.from_pretrained("briaai/RMBG-1.4")
 
-        # Modify UNet
-        with torch.no_grad():
-            new_conv_in = torch.nn.Conv2d(12, self.unet.conv_in.out_channels, 
-                                        self.unet.conv_in.kernel_size, 
-                                        self.unet.conv_in.stride, 
-                                        self.unet.conv_in.padding)
-            new_conv_in.weight.zero_()
-            new_conv_in.weight[:, :4, :, :].copy_(self.unet.conv_in.weight)
-            new_conv_in.bias = self.unet.conv_in.bias
-            self.unet.conv_in = new_conv_in
-
         self.unet_original_forward = self.unet.forward
         self.unet.forward = self.hooked_unet_forward
 
         # Load model weights
-        model_path = './models/iclight_sd15_fbc.safetensors'
-        if not os.path.exists(model_path):
-            download_url_to_file('https://huggingface.co/lllyasviel/ic-light/resolve/main/iclight_sd15_fbc.safetensors', model_path)
-
-        sd_offset = sf.load_file(model_path)
-        sd_origin = self.unet.state_dict()
-        sd_merged = {k: sd_origin[k] + sd_offset[k] for k in sd_origin.keys()}
-        self.unet.load_state_dict(sd_merged, strict=True)
+        self.load_model_weights(with_background)
 
         # Move to device and set precision
         self.text_encoder = self.text_encoder.to(device=self.device, dtype=torch.float16)
@@ -121,13 +139,6 @@ class IcLight:
             feature_extractor=None,
             image_encoder=None
         )
-
-    def hooked_unet_forward(self, sample, timestep, encoder_hidden_states, **kwargs):
-        c_concat = kwargs['cross_attention_kwargs']['concat_conds'].to(sample)
-        c_concat = torch.cat([c_concat] * (sample.shape[0] // c_concat.shape[0]), dim=0)
-        new_sample = torch.cat([sample, c_concat], dim=1)
-        kwargs['cross_attention_kwargs'] = {}
-        return self.unet_original_forward(new_sample, timestep, encoder_hidden_states, **kwargs)
 
     @torch.inference_mode()
     def encode_prompt_inner(self, txt: str):
@@ -224,12 +235,12 @@ class IcLight:
         result = 127 + (img.astype(np.float32) - 127 + sigma) * alpha
         return result.clip(0, 255).astype(np.uint8), alpha
 
-    def process(self, input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
+    def process(self, input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
         bg_source = BGSource(bg_source)
 
-        if bg_source == BGSource.UPLOAD:
+        if bg_source == BGSource.BACKGROUND:
             pass
-        elif bg_source == BGSource.UPLOAD_FLIP:
+        elif bg_source == BGSource.BACKGROUND_FLIP:
             input_bg = np.fliplr(input_bg)
         elif bg_source == BGSource.GREY:
             input_bg = np.zeros(shape=(image_height, image_width, 3), dtype=np.uint8) + 64
@@ -251,27 +262,49 @@ class IcLight:
             input_bg = np.stack((image,) * 3, axis=-1).astype(np.uint8)
 
         rng = torch.Generator(device=self.device).manual_seed(seed)
-
         fg = self.resize_and_center_crop(input_fg, image_width, image_height)
         bg = self.resize_and_center_crop(input_bg, image_width, image_height)
-        concat_conds = self.numpy2pytorch([fg, bg]).to(device=self.vae.device, dtype=self.vae.dtype)
-        concat_conds = self.vae.encode(concat_conds).latent_dist.mode() * self.vae.config.scaling_factor
-        concat_conds = torch.cat([c[None, ...] for c in concat_conds], dim=1)
 
-        conds, unconds = self.encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
+        if input_bg is BGSource.NONE:
+            concat_conds = self.numpy2pytorch([fg]).to(device=self.vae.device, dtype=self.vae.dtype)
+            concat_conds = self.vae.encode(concat_conds).latent_dist.mode() * self.vae.config.scaling_factor
+            conds, unconds = self.encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
 
-        latents = self.t2i_pipe(
-            prompt_embeds=conds,
-            negative_prompt_embeds=unconds,
-            width=image_width,
-            height=image_height,
-            num_inference_steps=steps,
-            num_images_per_prompt=num_samples,
-            generator=rng,
-            output_type='latent',
-            guidance_scale=cfg,
-            cross_attention_kwargs={'concat_conds': concat_conds},
-        ).images.to(self.vae.dtype) / self.vae.config.scaling_factor
+            bg_latent = self.numpy2pytorch([bg]).to(device=self.vae.device, dtype=self.vae.dtype)
+            bg_latent = self.vae.encode(bg_latent).latent_dist.mode() * self.vae.config.scaling_factor
+            latents = self.i2i_pipe(
+                image=bg_latent,
+                strength=lowres_denoise,
+                prompt_embeds=conds,
+                negative_prompt_embeds=unconds,
+                width=image_width,
+                height=image_height,
+                num_inference_steps=int(round(steps / lowres_denoise)),
+                num_images_per_prompt=num_samples,
+                generator=rng,
+                output_type='latent',
+                guidance_scale=cfg,
+                cross_attention_kwargs={'concat_conds': concat_conds},
+            ).images.to(self.vae.dtype) / self.vae.config.scaling_factor
+        else:
+            concat_conds = self.numpy2pytorch([fg, bg]).to(device=self.vae.device, dtype=self.vae.dtype)
+            concat_conds = self.vae.encode(concat_conds).latent_dist.mode() * self.vae.config.scaling_factor
+            concat_conds = torch.cat([c[None, ...] for c in concat_conds], dim=1)
+
+            conds, unconds = self.encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
+
+            latents = self.t2i_pipe(
+                prompt_embeds=conds,
+                negative_prompt_embeds=unconds,
+                width=image_width,
+                height=image_height,
+                num_inference_steps=steps,
+                num_images_per_prompt=num_samples,
+                generator=rng,
+                output_type='latent',
+                guidance_scale=cfg,
+                cross_attention_kwargs={'concat_conds': concat_conds},
+            ).images.to(self.vae.dtype) / self.vae.config.scaling_factor
 
         pixels = self.vae.decode(latents).sample
         pixels = self.pytorch2numpy(pixels)
@@ -313,28 +346,28 @@ class IcLight:
         return pixels, [fg, bg]
 
     @torch.inference_mode()
-    def process_relight(self, input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
+    def process_relight(self, input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
         input_fg, matting = self.run_rmbg(input_fg)
-        results, extra_images = self.process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source)
+        results, extra_images = self.process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
         results = [(x * 255.0).clip(0, 255).astype(np.uint8) for x in results]
         return results + extra_images
     
 
     @torch.inference_mode()
-    def process_normal(self, input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source):
+    def process_normal(self, input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
         input_fg, matting = self.run_rmbg(input_fg, sigma=16)
 
         print('left ...')
-        left = self.process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.LEFT.value)[0][0]
+        left = self.process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, BGSource.LEFT.value)[0][0]
 
         print('right ...')
-        right = self.process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.RIGHT.value)[0][0]
+        right = self.process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, BGSource.RIGHT.value)[0][0]
 
         print('bottom ...')
-        bottom = self.process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.BOTTOM.value)[0][0]
+        bottom = self.process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, BGSource.BOTTOM.value)[0][0]
 
         print('top ...')
-        top = self.process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, BGSource.TOP.value)[0][0]
+        top = self.process(input_fg, input_bg, prompt, image_width, image_height, 1, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, BGSource.TOP.value)[0][0]
 
         inner_results = [left * 2.0 - 1.0, right * 2.0 - 1.0, bottom * 2.0 - 1.0, top * 2.0 - 1.0]
 

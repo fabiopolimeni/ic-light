@@ -1,21 +1,6 @@
 import gradio as gr
+from iclight_core import process_relight, process_normal, BGSource, quick_prompts
 import db_examples
-from iclight import IcLightFBC, BGSource
-
-# Initialize IC-Light
-ic_light = IcLightFBC()
-
-quick_prompts = [
-    'beautiful woman',
-    'handsome man',
-    'beautiful woman, cinematic lighting',
-    'handsome man, cinematic lighting',
-    'beautiful woman, natural lighting',
-    'handsome man, natural lighting',
-    'beautiful woman, neo punk lighting, cyberpunk',
-    'handsome man, neo punk lighting, cyberpunk',
-]
-quick_prompts = [[x] for x in quick_prompts]
 
 block = gr.Blocks().queue()
 with block:
@@ -28,8 +13,8 @@ with block:
                 input_bg = gr.Image(source='upload', type="numpy", label="Background", height=480)
             prompt = gr.Textbox(label="Prompt")
             bg_source = gr.Radio(choices=[e.value for e in BGSource],
-                               value=BGSource.UPLOAD.value,
-                               label="Background Source", type='value')
+                                 value=BGSource.UPLOAD.value,
+                                 label="Background Source", type='value')
 
             example_prompts = gr.Dataset(samples=quick_prompts, label='Prompt Quick List', components=[prompt])
             bg_gallery = gr.Gallery(height=450, object_fit='contain', label='Background Quick List', value=db_examples.bg_samples, columns=5, allow_preview=False)
@@ -50,7 +35,7 @@ with block:
                 highres_denoise = gr.Slider(label="Highres Denoise", minimum=0.1, maximum=0.9, value=0.5, step=0.01)
                 a_prompt = gr.Textbox(label="Added Prompt", value='best quality')
                 n_prompt = gr.Textbox(label="Negative Prompt",
-                                    value='lowres, bad anatomy, bad hands, cropped, worst quality')
+                                      value='lowres, bad anatomy, bad hands, cropped, worst quality')
                 normal_button = gr.Button(value="Compute Normal (4x Slower)")
         with gr.Column():
             result_gallery = gr.Gallery(height=832, object_fit='contain', label='Outputs')
@@ -65,12 +50,9 @@ with block:
             outputs=[result_gallery],
             run_on_click=True, examples_per_page=1024
         )
-
-    ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, 
-           a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source]
-    
-    relight_button.click(fn=ic_light.process_relight, inputs=ips, outputs=[result_gallery])
-    normal_button.click(fn=ic_light.process_normal, inputs=ips, outputs=[result_gallery])
+    ips = [input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, bg_source]
+    relight_button.click(fn=process_relight, inputs=ips, outputs=[result_gallery])
+    normal_button.click(fn=process_normal, inputs=ips, outputs=[result_gallery])
     example_prompts.click(lambda x: x[0], inputs=example_prompts, outputs=prompt, show_progress=False, queue=False)
 
     def bg_gallery_selected(gal, evt: gr.SelectData):

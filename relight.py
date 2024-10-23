@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 import argparse
-from iclight import IcLight, BGSource
+from iclight_core import IcLight, BGSource
 import cv2
 from datetime import datetime
 
@@ -10,7 +10,7 @@ def bg_source_type(value):
 def main():
     parser = argparse.ArgumentParser(description='IC-Light Image Relighting Tool')
     parser.add_argument('-f', '--input_fg', required=True, help='Path to foreground image')
-    parser.add_argument('-b', '--input_bg', help='Path to background image')
+    parser.add_argument('-b', '--input_bg', default=None, help='Path to background image')
     parser.add_argument('-o', '--output', help='Path to output image (default: timestamp_mode.png)')
     parser.add_argument('-p', '--prompt', default='beautiful woman', help='Text prompt')
     parser.add_argument('-x', '--width', type=int, default=512, help='Output image width')
@@ -18,19 +18,20 @@ def main():
     parser.add_argument('-k', '--samples', type=int, default=1, help='Number of samples')
     parser.add_argument('-s', '--seed', type=int, default=12345, help='Random seed')
     parser.add_argument('-t', '--steps', type=int, default=10, help='Number of inference steps')
-    parser.add_argument('-c', '--cfg', type=float, default=7.0, help='CFG scale')
+    parser.add_argument('-c', '--cfg', type=float, default=4.0, help='CFG scale')
     parser.add_argument('-r', '--highres_scale', type=float, default=1, help='Highres scale')
     parser.add_argument('-d', '--highres_denoise', type=float, default=0.5, help='Highres denoise strength')
+    parser.add_argument('-l', '--lowres_denoise', type=float, default=0.9, help='Lowres denoise strength')
     parser.add_argument('-a', '--added_prompt', default='best quality', help='Additional positive prompt')
     parser.add_argument('-n', '--negative_prompt', default='lowres, bad anatomy, bad hands, cropped, worst quality', help='Negative prompt')
     parser.add_argument('-m', '--mode', choices=['relight', 'normal'], default='relight', help='Processing mode')
-    parser.add_argument('-g', '--bg_source', type=bg_source_type, choices=list(BGSource), default=BGSource.UPLOAD,
+    parser.add_argument('-g', '--bg_source', type=bg_source_type, choices=list(BGSource), default=BGSource.BACKGROUND,
                 help='Background source: ' + ', '.join([e.name for e in BGSource]))
 
     args = parser.parse_args()
 
     # Validate background requirements
-    if args.bg_source in [BGSource.UPLOAD.value, BGSource.UPLOAD_FLIP.value]:
+    if args.bg_source in [BGSource.BACKGROUND.value, BGSource.BACKGROUND_FLIP.value]:
         if not args.input_bg:
             print(f"Error: --input_bg is required when bg_source is {args.bg_source}")
             return
@@ -40,8 +41,12 @@ def main():
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         args.output = f"{timestamp}_{args.mode}.png"
 
+    with_bg = True if args.input_bg and args.bg_source in [BGSource.BACKGROUND.value, BGSource.BACKGROUND_FLIP.value] else False
+
+    # If no bg is provided, then the bg lighting 
+    
     # Initialize IC-Light
-    ic_light = IcLight()
+    ic_light = IcLight(with_bg)
 
     # Load foreground image
     input_fg = cv2.imread(args.input_fg)
@@ -69,6 +74,7 @@ def main():
         cfg=args.cfg,
         highres_scale=args.highres_scale,
         highres_denoise=args.highres_denoise,
+        lowres_denoise=args.lowres_denoise,
         bg_source=args.bg_source
     )
 
