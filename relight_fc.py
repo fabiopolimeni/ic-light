@@ -16,7 +16,7 @@ def main():
     parser.add_argument('-y', '--height', type=int, default=512, help='Output image height')
     parser.add_argument('-k', '--samples', type=int, default=1, help='Number of samples')
     parser.add_argument('-s', '--seed', type=int, default=12345, help='Random seed')
-    parser.add_argument('-t', '--steps', type=int, default=25, help='Number of inference steps')
+    parser.add_argument('-t', '--steps', type=int, default=10, help='Number of inference steps')
     parser.add_argument('-c', '--cfg', type=float, default=2.0, help='CFG scale')
     parser.add_argument('-l', '--lowres_denoise', type=float, default=0.9, help='Lowres denoise strength')
     parser.add_argument('-r', '--highres_scale', type=float, default=1.5, help='Highres scale')

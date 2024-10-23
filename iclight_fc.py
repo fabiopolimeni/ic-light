@@ -170,12 +170,18 @@ class IcLightFC:
         return c, uc
 
     @torch.inference_mode()
-    def pytorch2numpy(self, imgs):
+    def pytorch2numpy(self, imgs, quant=True):
         results = []
         for x in imgs:
             y = x.movedim(0, -1)
-            y = y * 127.5 + 127.5
-            y = y.detach().float().cpu().numpy().clip(0, 255).astype(np.uint8)
+
+            if quant:
+                y = y * 127.5 + 127.5
+                y = y.detach().float().cpu().numpy().clip(0, 255).astype(np.uint8)
+            else:
+                y = y * 0.5 + 0.5
+                y = y.detach().float().cpu().numpy().clip(0, 1).astype(np.float32)
+
             results.append(y)
         return results
 
