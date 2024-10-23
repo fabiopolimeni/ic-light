@@ -41,7 +41,7 @@ def main():
     input_fg = cv2.cvtColor(input_fg, cv2.COLOR_BGR2RGB)
 
     # Process the image
-    _, results = ic_light.process_relight(
+    results = ic_light.process_relight(
         input_fg=input_fg,
         prompt=args.prompt,
         image_width=args.width,
@@ -59,7 +59,7 @@ def main():
     )
 
     # Save the first result
-    output = cv2.cvtColor(results, cv2.COLOR_RGB2BGR)
+    output = cv2.cvtColor(results[0], cv2.COLOR_RGB2BGR)
     cv2.imwrite(args.output, output)
     print(f"Output saved to: {args.output}")
 
