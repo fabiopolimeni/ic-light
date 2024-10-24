@@ -15,6 +15,7 @@ from briarmbg import BriaRMBG
 
 class BGSource(Enum):
     NONE = "None"
+    BACKGROUND = "Background Image"
     LEFT = "Left Light"
     RIGHT = "Right Light"
     TOP = "Top Light"
@@ -228,11 +229,10 @@ class IcLightFC:
         return result.clip(0, 255).astype(np.uint8), alpha
     
     @torch.inference_mode()
-    def process(self, input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
+    def process(self, input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
         bg_source = BGSource(bg_source)
-        input_bg = None
 
-        if bg_source == BGSource.NONE:
+        if bg_source == BGSource.NONE or bg_source == BGSource.BACKGROUND:
             pass
         elif bg_source == BGSource.LEFT:
             gradient = np.linspace(255, 0, image_width)
@@ -262,7 +262,7 @@ class IcLightFC:
 
         conds, unconds = self.encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
 
-        if input_bg is None:
+        if bg_source == BGSource.NONE:
             latents = self.t2i_pipe(
                 prompt_embeds=conds,
                 negative_prompt_embeds=unconds,
@@ -275,6 +275,10 @@ class IcLightFC:
                 guidance_scale=cfg,
                 cross_attention_kwargs={'concat_conds': concat_conds},
             ).images.to(self.vae.dtype) / self.vae.config.scaling_factor
+        elif bg_source == BGSource.BACKGROUND:
+            bg = self.resize_and_center_crop(input_bg, image_width, image_height)
+            bg_latent = self.numpy2pytorch([bg]).to(device=self.vae.device, dtype=self.vae.dtype)
+            latents = self.vae.encode(bg_latent).latent_dist.mode()
         else:
             bg = self.resize_and_center_crop(input_bg, image_width, image_height)
             bg_latent = self.numpy2pytorch([bg]).to(device=self.vae.device, dtype=self.vae.dtype)
@@ -333,6 +337,7 @@ class IcLightFC:
 
     @torch.inference_mode()
     def process_relight(self, input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
+        input_bg = input_fg.copy()
         input_fg, matting = self.run_rmbg(input_fg)
-        results = self.process(input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
+        results = self.process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
         return input_fg, results
