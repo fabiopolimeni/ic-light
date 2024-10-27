@@ -16,6 +16,7 @@ from briarmbg import BriaRMBG
 class BGSource(Enum):
     NONE = "None"
     BACKGROUND = "Background Image"
+    ENVIRONMENT = "Environment Image"
     LEFT = "Left Light"
     RIGHT = "Right Light"
     TOP = "Top Light"
@@ -232,7 +233,7 @@ class IcLightFC:
     def process(self, input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
         bg_source = BGSource(bg_source)
 
-        if bg_source == BGSource.NONE or bg_source == BGSource.BACKGROUND:
+        if bg_source == BGSource.NONE or bg_source == BGSource.BACKGROUND or bg_source == BGSource.ENVIRONMENT:
             pass
         elif bg_source == BGSource.LEFT:
             gradient = np.linspace(255, 0, image_width)
@@ -263,6 +264,7 @@ class IcLightFC:
         conds, unconds = self.encode_prompt_pair(positive_prompt=prompt + ', ' + a_prompt, negative_prompt=n_prompt)
 
         if bg_source == BGSource.NONE:
+            print('Using text-to-image to generate bg latents')
             latents = self.t2i_pipe(
                 prompt_embeds=conds,
                 negative_prompt_embeds=unconds,
@@ -276,10 +278,12 @@ class IcLightFC:
                 cross_attention_kwargs={'concat_conds': concat_conds},
             ).images.to(self.vae.dtype) / self.vae.config.scaling_factor
         elif bg_source == BGSource.BACKGROUND:
+            print('Using BACKGROUND image to generate bg latents')
             bg = self.resize_and_center_crop(input_bg, image_width, image_height)
             bg_latent = self.numpy2pytorch([bg]).to(device=self.vae.device, dtype=self.vae.dtype)
             latents = self.vae.encode(bg_latent).latent_dist.mode()
         else:
+            print('Using image-to-image to generate bg latents')
             bg = self.resize_and_center_crop(input_bg, image_width, image_height)
             bg_latent = self.numpy2pytorch([bg]).to(device=self.vae.device, dtype=self.vae.dtype)
             bg_latent = self.vae.encode(bg_latent).latent_dist.mode() * self.vae.config.scaling_factor
@@ -336,8 +340,10 @@ class IcLightFC:
         return self.pytorch2numpy(pixels)
 
     @torch.inference_mode()
-    def process_relight(self, input_fg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
-        input_bg = input_fg.copy()
+    def process_relight(self, input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source):
+        if input_bg is None:
+            input_bg = input_fg.copy()
+ 
         input_fg, matting = self.run_rmbg(input_fg)
         results = self.process(input_fg, input_bg, prompt, image_width, image_height, num_samples, seed, steps, a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source)
         return input_fg, results

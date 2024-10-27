@@ -10,6 +10,7 @@ def bg_source_type(value):
 def main():
     parser = argparse.ArgumentParser(description='IC-Light Image Relighting Tool')
     parser.add_argument('-f', '--input_fg', required=True, help='Path to foreground image')
+    parser.add_argument('-b', '--input_bg', help='Path to background image')
     parser.add_argument('-o', '--output', help='Path to output image (default: timestamp_mode.png)')
     parser.add_argument('-p', '--prompt', help='Text prompt', required=True)
     parser.add_argument('-x', '--width', type=int, default=512, help='Output image width')
@@ -40,9 +41,17 @@ def main():
     input_fg = cv2.imread(args.input_fg)
     input_fg = cv2.cvtColor(input_fg, cv2.COLOR_BGR2RGB)
 
+    # Load background image if provided
+    if args.input_bg:
+        input_bg = cv2.imread(args.input_bg)
+        input_bg = cv2.cvtColor(input_bg, cv2.COLOR_BGR2RGB)
+    else:
+        input_bg = None
+
     # Process the image
     _, result_images = ic_light.process_relight(
         input_fg=input_fg,
+        input_bg=input_bg,
         prompt=args.prompt,
         image_width=args.width,
         image_height=args.height,

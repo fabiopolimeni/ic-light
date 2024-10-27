@@ -76,7 +76,7 @@ with block:
             run_on_click=True, examples_per_page=1024
         )
     
-    ips = [input_fg, prompt, image_width, image_height, num_samples, seed, steps, 
+    ips = [input_fg, None, prompt, image_width, image_height, num_samples, seed, steps, 
            a_prompt, n_prompt, cfg, highres_scale, highres_denoise, lowres_denoise, bg_source]
     
     relight_button.click(fn=ic_light.process_relight, inputs=ips, outputs=[output_bg, result_gallery])
