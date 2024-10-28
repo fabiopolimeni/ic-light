@@ -1,3 +1,9 @@
+---
+title: ic-light
+app_file: gradio_demo.py
+sdk: gradio
+sdk_version: 4.44.1
+---
 # IC-Light
 
 IC-Light is a project to manipulate the illumination of images.
