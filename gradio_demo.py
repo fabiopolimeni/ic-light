@@ -38,7 +38,7 @@ with gr.Blocks() as demo:
     with gr.Row():
         with gr.Column():
             input_fg = gr.Image(label="Foreground Image", type="numpy")
-            input_bg = gr.Image(label="Background Image (Optional)", type="numpy")
+            input_bg = gr.Image(label="Background Image (Optional)", type="numpy", value=None)
             
         with gr.Column():
             prompt = gr.Textbox(label="Prompt", placeholder="Enter your lighting prompt")
